@@ -238,11 +238,12 @@ function isOpenTodo(t: Todo): boolean {
     return t.status === "pending" || t.status === "in_progress"
 }
 
-function getOpenTodos(todos: Todo[]): Todo[] {
+function getOpenTodos(todos: Todo[] | undefined | null): Todo[] {
+    if (!Array.isArray(todos)) return []
     return todos.filter(isOpenTodo)
 }
 
-export function buildOpenTodosReminder(todos: Todo[]): string {
+export function buildOpenTodosReminder(todos: Todo[] | undefined | null): string {
     if (!Array.isArray(todos)) return "continue"
     const open = todos.filter(t => t.status === "pending" || t.status === "in_progress")
     if (open.length === 0) return "continue"
@@ -255,8 +256,17 @@ export const AutoResumePlugin: Plugin = async (ctx, options) => {
     const debugFile = "/tmp/opencode-auto-resume-debug.log"
     const dbgFile = (msg: string) => {
         try {
-            const fs = require("node:fs") as typeof import("node:fs")
-            fs.appendFileSync(debugFile, `${new Date().toISOString()} ${msg}\n`)
+            // bun runtime exposes `require` globally; node ESM doesn't.
+            // Fall back to a no-op so this never throws.
+            const req = (globalThis as { require?: NodeRequire }).require
+            if (typeof req === "function") {
+                const fs = req("node:fs") as typeof import("node:fs")
+                fs.appendFileSync(debugFile, `${new Date().toISOString()} ${msg}\n`)
+            } else {
+                // Last resort: write via appendFileSync from bun's runtime API
+                // via the opencode client log endpoint as a side channel.
+                ;(globalThis as { Bun?: { write?: (...a: unknown[]) => unknown } }).Bun?.write?.(debugFile, `${new Date().toISOString()} ${msg}\n`, { append: true })
+            }
         } catch {}
     }
     dbgFile("plugin init")
