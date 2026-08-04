@@ -334,7 +334,7 @@ describe("handleEvent - session.error", () => {
         expect(promptCalls.length).toBe(0)
     })
 
-    test("non-MessageAbortedError with busyCount===0 → no crash, breaks early", async () => {
+    test("non-MessageAbortedError with busyCount===0 and non-transient → no crash, breaks early", async () => {
         const { ctx, promptCalls } = createMockContext({
             sessions: [{ id: "ses_test1", status: "idle" }],
             messages: {}
@@ -345,7 +345,7 @@ describe("handleEvent - session.error", () => {
             event: {
                 type: "session.error",
                 sessionID: "ses_test1",
-                properties: { error: { name: "ProviderError", data: { message: "rate limited" } } }
+                properties: { error: { name: "PermissionError", data: { message: "operation not permitted" } } }
             }
         })
 
