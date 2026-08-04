@@ -1495,6 +1495,7 @@ async function _buildHooks(ctx: Parameters<Plugin>[0], options: Parameters<Plugi
     async function handleEvent(ev: Record<string, unknown>) {
         const type = ev.type as string
         const sid = getSid(ev)
+        cfg.dbgFile(`event type=${type} sid=${sid}`)
 
         // Only touch the session that emitted the event
         if (sid) {
