@@ -354,18 +354,65 @@ describe("handleEvent - session.error", () => {
         expect(promptCalls.length).toBe(0)
     })
 
-    test("non-MessageAbortedError with busy session → log called with error details", async () => {
+    test("transient 503 'request queue full' error → auto-resume sent", async () => {
         const { ctx, promptCalls } = createMockContext({
-            sessions: [{ id: "ses_test1", status: "busy" }],
+            sessions: [],
             messages: {}
         })
         const hooks = await AutoResumePlugin(ctx, { enabled: true, baseBackoffMs: 1 })
+
+        await hooks.event({ event: { type: "session.status", sessionID: "ses_test1", properties: { status: "busy" } } })
+
+        await hooks.event({
+            event: {
+                type: "session.error",
+                sessionID: "ses_test1",
+                properties: { error: { name: "ProviderError", data: { message: "Streaming response failed: [503] The request queue is full." } } }
+            }
+        })
+
+        await wait(50)
+
+        expect(promptCalls.length).toBe(1)
+        expect(promptCalls[0].body).toBe("continue")
+    })
+
+    test("transient 'rate limited' error on busy session → auto-resume sent", async () => {
+        const { ctx, promptCalls } = createMockContext({
+            sessions: [],
+            messages: {}
+        })
+        const hooks = await AutoResumePlugin(ctx, { enabled: true, baseBackoffMs: 1 })
+
+        await hooks.event({ event: { type: "session.status", sessionID: "ses_test1", properties: { status: "busy" } } })
 
         await hooks.event({
             event: {
                 type: "session.error",
                 sessionID: "ses_test1",
                 properties: { error: { name: "ProviderError", data: { message: "rate limited" } } }
+            }
+        })
+
+        await wait(50)
+
+        expect(promptCalls.length).toBe(1)
+    })
+
+    test("non-transient error on busy session → no auto-resume (log only)", async () => {
+        const { ctx, promptCalls } = createMockContext({
+            sessions: [],
+            messages: {}
+        })
+        const hooks = await AutoResumePlugin(ctx, { enabled: true, baseBackoffMs: 1 })
+
+        await hooks.event({ event: { type: "session.status", sessionID: "ses_test1", properties: { status: "busy" } } })
+
+        await hooks.event({
+            event: {
+                type: "session.error",
+                sessionID: "ses_test1",
+                properties: { error: { name: "PermissionError", data: { message: "operation not permitted" } } }
             }
         })
 

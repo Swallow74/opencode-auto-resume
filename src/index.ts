@@ -120,6 +120,54 @@ const READY_TO_CONTINUE_PATTERNS = [
     /moving on to task/i,
 ]
 
+/**
+ * Transient provider/streaming errors that clear on their own once the
+ * provider's load/queue drains (e.g. 503 "The request queue is full",
+ * 429 rate limits, 5xx gateway errors). Matched against the full
+ * serialized error so it works regardless of where the message is nested.
+ */
+const TRANSIENT_RETRY_PATTERNS = [
+    /503/i,
+    /request queue is full/i,
+    /queue is full/i,
+    /429/i,
+    /rate\s*limit/i,
+    /too many requests/i,
+    /overloaded/i,
+    /temporarily unavailable/i,
+    /temporarily.\s*?unavailable/i,
+    /service unavailable/i,
+    /502/i,
+    /504/i,
+    /bad gateway/i,
+    /gateway timeout/i,
+    /internal server error/i,
+]
+
+function serializeErrorValue(v: unknown): string {
+    if (v === undefined || v === null) return ""
+    if (typeof v === "string") return v
+    try {
+        return JSON.stringify(v)
+    } catch {
+        return String(v)
+    }
+}
+
+/** Heuristic: does this session.error represent a transient, retryable failure? */
+function isTransientRetryableError(errorObj: Record<string, unknown> | undefined): boolean {
+    if (!errorObj) return false
+    const name = String(errorObj.name ?? "")
+    const data = errorObj.data as Record<string, unknown> | undefined
+    const message =
+        String(data?.message ?? errorObj.message ?? "") ||
+        serializeErrorValue(data) ||
+        serializeErrorValue(errorObj.data)
+    const haystack = `${name} ${message}`.trim()
+    if (!haystack) return false
+    return TRANSIENT_RETRY_PATTERNS.some((pat) => pat.test(haystack))
+}
+
 function stripCodeBlocks(text: string): string {
     return text
         .replace(/```[\s\S]*?```/g, "")
@@ -230,6 +278,8 @@ export const AutoResumePlugin: Plugin = async (ctx, options) => {
     (options?.warmupMs as number) ?? DEFAULT_WARMUP_MS
     const debug: boolean =
     (options?.debug as boolean) ?? DEFAULT_DEBUG
+    const retryOnTransientErrors: boolean =
+    (options?.retryOnTransientErrors as boolean) !== false
     const resumeOnActionIntent: boolean =
     (options?.resumeOnActionIntent as boolean) !== false
     const continuePrompt: string =
@@ -1611,6 +1661,19 @@ export const AutoResumePlugin: Plugin = async (ctx, options) => {
                 if (sid) {
                     const w = sessions.get(sid)
                     if (w) { w.pendingTools = 0; w.pendingCommands = 0 }
+                }
+
+                // Auto-resume on transient provider/streaming errors such as
+                // "Streaming response failed: [503] The request queue is full.".
+                // These clear on their own once the provider queue drains, so a
+                // scheduled continue (with backoff) recovers the session instead
+                // of leaving it stuck.
+                if (retryOnTransientErrors && sid && isTransientRetryableError(errorObj)) {
+                    const w = sessions.get(sid)
+                    if (w && !w.userCancelled && !w.gaveUp && w.resumeAttempts < maxRetries) {
+                        await log("info", `${short(sid)} - transient error (${errorName || "provider"}): "${errorMessage}" scheduling auto-resume with backoff`)
+                        tryResume(sid, w, "Transient provider error", continuePrompt).catch(() => {})
+                    }
                 }
                 break
             }
