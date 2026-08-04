@@ -1651,29 +1651,36 @@ export const AutoResumePlugin: Plugin = async (ctx, options) => {
                     break
                 }
 
-                if (busyCount() === 0) break
-
                 const errorMessage =
                     (errorObj?.data as Record<string, unknown>)?.message as string | undefined ??
                     String(errorObj?.data ?? "")
                 log("debug", `Session error: ${errorName} - ${errorMessage}`)
 
+                // Auto-resume on transient provider/streaming errors such as
+                // "Streaming response failed: [503] The request queue is full.".
+                // These clear on their own once the provider queue drains.
+                //
+                // IMPORTANT: must run BEFORE the busyCount() guard. Opencode
+                // typically emits `session.status idle` BEFORE `session.error`
+                // when a stream dies, so by the time we get here busyCount is
+                // already 0 and the original guard would skip recovery.
+                if (retryOnTransientErrors && sid && isTransientRetryableError(errorObj)) {
+                    const w = sessions.get(sid) ?? (sid ? ensureWatch(sid) : undefined)
+                    if (w && !w.userCancelled && !w.gaveUp && w.resumeAttempts < maxRetries) {
+                        await log("info", `${short(sid)} - transient error (${errorName || "provider"}): "${errorMessage}" → auto-resume`)
+                        tryResume(sid, w, "Transient provider error", continuePrompt).catch((err) => {
+                            const msg = err instanceof Error ? err.message : String(err)
+                            log("debug", `${short(sid)} - transient auto-resume attempt failed: ${msg}`)
+                        })
+                        break
+                    }
+                }
+
+                if (busyCount() === 0) break
+
                 if (sid) {
                     const w = sessions.get(sid)
                     if (w) { w.pendingTools = 0; w.pendingCommands = 0 }
-                }
-
-                // Auto-resume on transient provider/streaming errors such as
-                // "Streaming response failed: [503] The request queue is full.".
-                // These clear on their own once the provider queue drains, so a
-                // scheduled continue (with backoff) recovers the session instead
-                // of leaving it stuck.
-                if (retryOnTransientErrors && sid && isTransientRetryableError(errorObj)) {
-                    const w = sessions.get(sid)
-                    if (w && !w.userCancelled && !w.gaveUp && w.resumeAttempts < maxRetries) {
-                        await log("info", `${short(sid)} - transient error (${errorName || "provider"}): "${errorMessage}" scheduling auto-resume with backoff`)
-                        tryResume(sid, w, "Transient provider error", continuePrompt).catch(() => {})
-                    }
                 }
                 break
             }
