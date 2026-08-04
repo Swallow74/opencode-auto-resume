@@ -312,6 +312,47 @@ export const AutoResumePlugin: Plugin = async (ctx, options) => {
     (options?.doneWithoutWorkPrompt as string) ?? DONE_WITHOUT_WORK_PROMPT
     const dbg = (...args: unknown[]) => { if (debug) console.log("[debug]", ...args) }
 
+    // Catch-all to find what's actually throwing "todos.filter is not a function"
+    // during plugin load. Without this, opencode logs "failed to load plugin"
+    // and the plugin's event hooks never get a chance to handle the 503 errors.
+    try {
+        return await _buildHooks(ctx, options, {
+            chunkTimeoutMs, checkIntervalMs, gracePeriodMs, maxRetries,
+            maxBackoffMs, baseBackoffMs, subagentWaitMs, loopMaxContinues,
+            loopWindowMs, toolTextCheckDelayMs, minActivityGapMs, warmupMs,
+            debug, retryOnTransientErrors, resumeOnActionIntent, continuePrompt,
+            actionIntentPrompt, toolTextRecoveryPrompt, thinkingToolRecoveryPrompt,
+            doneWithoutWorkPrompt, dbg, dbgFile,
+        })
+    } catch (e) {
+        dbgFile(`PLUGIN INIT THREW: ${e instanceof Error ? e.stack ?? e.message : String(e)}`)
+        throw e
+    }
+}
+
+// Internal builder extracted so the top-level try/catch can capture every throw.
+async function _buildHooks(ctx: Parameters<Plugin>[0], options: Parameters<Plugin>[1] | undefined, cfg: {
+    chunkTimeoutMs: number; checkIntervalMs: number; gracePeriodMs: number;
+    maxRetries: number; maxBackoffMs: number; baseBackoffMs: number;
+    subagentWaitMs: number; loopMaxContinues: number; loopWindowMs: number;
+    toolTextCheckDelayMs: number; minActivityGapMs: number; warmupMs: number;
+    debug: boolean; retryOnTransientErrors: boolean; resumeOnActionIntent: boolean;
+    continuePrompt: string; actionIntentPrompt: string;
+    toolTextRecoveryPrompt: string; thinkingToolRecoveryPrompt: string;
+    doneWithoutWorkPrompt: string;
+    dbg: (...args: unknown[]) => void;
+    dbgFile: (msg: string) => void;
+}) {
+    const {
+        chunkTimeoutMs, checkIntervalMs, gracePeriodMs, maxRetries,
+        maxBackoffMs, baseBackoffMs, subagentWaitMs, loopMaxContinues,
+        loopWindowMs, toolTextCheckDelayMs, minActivityGapMs, warmupMs,
+        debug, retryOnTransientErrors, resumeOnActionIntent, continuePrompt,
+        actionIntentPrompt, toolTextRecoveryPrompt, thinkingToolRecoveryPrompt,
+        doneWithoutWorkPrompt, dbg, dbgFile,
+    } = cfg
+    cfg.dbgFile("buildHooks start")
+
     const sessions = new Map<string, SessionWatch>()
     let timer: ReturnType<typeof setInterval> | null = null
     let discoveryTimer: ReturnType<typeof setInterval> | null = null
