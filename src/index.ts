@@ -642,6 +642,27 @@ async function _buildHooks(ctx: Parameters<Plugin>[0], options: Parameters<Plugi
         return (msg.role as string) ?? ((msg.info as Record<string, unknown> | undefined)?.role as string)
     }
 
+    /**
+     * Extract an error object from an assistant message. opencode stores the
+     * provider/stream error either at `msg.error` or under `msg.info.error`,
+     * with `name` + `data` (or `data.message`) shape — same as the
+     * `session.error` event payload. Returns undefined when the message has no
+     * error attached.
+     */
+    function extractAssistantError(msg: Record<string, unknown>): Record<string, unknown> | undefined {
+        const info = msg.info as Record<string, unknown> | undefined
+        const candidates: unknown[] = [
+            msg.error,
+            info?.error,
+        ]
+        for (const c of candidates) {
+            if (c && typeof c === "object" && "name" in (c as Record<string, unknown>)) {
+                return c as Record<string, unknown>
+            }
+        }
+        return undefined
+    }
+
     async function lastAssistantEndsWithCelebration(sid: string): Promise<boolean> {
         try {
             const msgs = await getSessionMessages(sid)
@@ -1467,6 +1488,39 @@ async function _buildHooks(ctx: Parameters<Plugin>[0], options: Parameters<Plugi
                 if (sent) {
                     w.todoNudgeAttempts++
                     await log("info", `${short(sid)} - idle periodic recheck: nudge ${w.todoNudgeAttempts}/${maxRetries}`)
+                }
+            }
+
+            // POLLING-BASED transient-error recovery. opencode does NOT dispatch
+            // `session.error` events for stream/provider failures (e.g. "Streaming
+            // response failed: [503] The request queue is full.") to plugins, so
+            // we detect them by polling the last assistant message of each tracked
+            // session for an error matching the transient-retry patterns.
+            if (retryOnTransientErrors) {
+                for (const [sid, w] of sessions) {
+                    if (w.userCancelled || w.gaveUp || w.continuing) continue
+                    if (w.resumeAttempts >= maxRetries) continue
+                    if (w.lastRetryAt > 0 && (now - w.lastRetryAt) < baseBackoffMs) continue
+                    if (w.status === "busy") continue  // still streaming, don't fight opencode
+                    try {
+                        const msgs = await getSessionMessages(sid)
+                        if (!Array.isArray(msgs) || msgs.length === 0) continue
+                        const last = msgs[msgs.length - 1]
+                        if (roleOf(last) !== "assistant") continue
+                        const errObj = extractAssistantError(last)
+                        if (!errObj) continue
+                        cfg.dbgFile(`poll: last assistant msg has error name=${errObj.name} msg=${serializeErrorValue(errObj.data).slice(0,120)}`)
+                        if (!isTransientRetryableError(errObj)) continue
+                        cfg.dbgFile(`poll: triggering auto-resume for ${short(sid)}`)
+                        await log("info", `${short(sid)} - polled transient error: "${serializeErrorValue(errObj.data?.message ?? errObj.data).slice(0,120)}" → auto-resume`)
+                        tryResume(sid, w, "Transient provider error (polled)", continuePrompt).then((ok) => {
+                            cfg.dbgFile(`poll: tryResume ok=${ok}`)
+                        }).catch((err) => {
+                            cfg.dbgFile(`poll: tryResume threw: ${err instanceof Error ? err.message : String(err)}`)
+                        })
+                    } catch (e) {
+                        cfg.dbgFile(`poll: error checking ${short(sid)}: ${e instanceof Error ? e.message : String(e)}`)
+                    }
                 }
             }
 
