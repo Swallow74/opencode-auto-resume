@@ -252,6 +252,14 @@ export function buildOpenTodosReminder(todos: Todo[]): string {
 }
 
 export const AutoResumePlugin: Plugin = async (ctx, options) => {
+    const debugFile = "/tmp/opencode-auto-resume-debug.log"
+    const dbgFile = (msg: string) => {
+        try {
+            const fs = require("node:fs") as typeof import("node:fs")
+            fs.appendFileSync(debugFile, `${new Date().toISOString()} ${msg}\n`)
+        } catch {}
+    }
+    dbgFile("plugin init")
     const chunkTimeoutMs: number =
     (options?.chunkTimeoutMs as number) ?? DEFAULT_CHUNK_TIMEOUT_MS
     const checkIntervalMs: number =
@@ -1638,6 +1646,7 @@ export const AutoResumePlugin: Plugin = async (ctx, options) => {
                 const errorObj = getError(ev)
                 const errorName = (errorObj?.name as string) ?? ""
                 const isMessageAborted = errorName === "MessageAbortedError"
+                dbgFile(`session.error sid=${sid} name=${errorName} aborted=${isMessageAborted} busyCount=${busyCount()} tracked=${sid ? sessions.has(sid) : false}`)
 
                 if (isMessageAborted) {
                     for (const [wSid, w] of sessions) {
@@ -1654,6 +1663,7 @@ export const AutoResumePlugin: Plugin = async (ctx, options) => {
                 const errorMessage =
                     (errorObj?.data as Record<string, unknown>)?.message as string | undefined ??
                     String(errorObj?.data ?? "")
+                dbgFile(`session.error msg=${JSON.stringify(errorMessage).slice(0,200)} transient=${isTransientRetryableError(errorObj)} retryOnTransientErrors=${retryOnTransientErrors}`)
                 log("debug", `Session error: ${errorName} - ${errorMessage}`)
 
                 // Auto-resume on transient provider/streaming errors such as
@@ -1667,12 +1677,18 @@ export const AutoResumePlugin: Plugin = async (ctx, options) => {
                 if (retryOnTransientErrors && sid && isTransientRetryableError(errorObj)) {
                     const w = sessions.get(sid) ?? (sid ? ensureWatch(sid) : undefined)
                     if (w && !w.userCancelled && !w.gaveUp && w.resumeAttempts < maxRetries) {
+                        dbgFile(`session.error → triggering tryResume resumeAttempts=${w.resumeAttempts}`)
                         await log("info", `${short(sid)} - transient error (${errorName || "provider"}): "${errorMessage}" → auto-resume`)
-                        tryResume(sid, w, "Transient provider error", continuePrompt).catch((err) => {
+                        tryResume(sid, w, "Transient provider error", continuePrompt).then((ok) => {
+                            dbgFile(`session.error tryResume returned ok=${ok}`)
+                        }).catch((err) => {
                             const msg = err instanceof Error ? err.message : String(err)
+                            dbgFile(`session.error tryResume threw: ${msg}`)
                             log("debug", `${short(sid)} - transient auto-resume attempt failed: ${msg}`)
                         })
                         break
+                    } else {
+                        dbgFile(`session.error → skip: w=${!!w} cancelled=${w?.userCancelled} gaveUp=${w?.gaveUp} attempts=${w?.resumeAttempts}/${maxRetries}`)
                     }
                 }
 
